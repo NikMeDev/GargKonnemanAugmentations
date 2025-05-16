@@ -216,7 +216,7 @@ fn main() -> Result<()> {
     let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
-        Algorithm::FleischerFPTAS,
+        //Algorithm::FleischerFPTAS,
         Algorithm::AdaptiveGargKonemann,
         Algorithm::ParAdaptiveGargKonnemann,
     ];
