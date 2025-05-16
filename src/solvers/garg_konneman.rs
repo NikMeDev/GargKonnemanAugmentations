@@ -339,7 +339,11 @@ pub fn par_garg_konemann_mcf(
             );
         }
         iteration += 1;
-    }
+
+        if elapsed_time.as_secs() > 60 * 60 {
+            println!("Timeout reached, stopping the algorithm.");
+            break;
+        }
 
     normalize_flows(
         &mut x_path_flows,
