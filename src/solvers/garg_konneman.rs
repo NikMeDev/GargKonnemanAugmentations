@@ -46,6 +46,10 @@ fn normalize_flows(x_path_flows: &mut HashMap<Vec<NodeIndex>, f64>, c_normalizat
     }
 }
 
+fn is_close_to_true(current_flow: f64, target_flow: f64, epsilon: f64) {
+    target_flow / current_flow <= 1.0 + epsilon
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IterationInfo {
     pub iteration: usize,
@@ -57,6 +61,7 @@ pub fn garg_konemann_mcf(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
     epsilon: f64,
+    target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
     let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
@@ -162,6 +167,12 @@ pub fn garg_konemann_mcf(
             elapsed_time,
         });
 
+        if let Some(target_flow_val) = target_flow {
+            if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
+                break;
+            }
+        }
+
         if iteration % 10000 == 0 {
             println!(
                 "Iteration {}: Current flow scaled sum: {} \t Current elapsed: {:?}",
@@ -187,6 +198,7 @@ pub fn par_garg_konemann_mcf(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
     epsilon: f64,
+    target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
     let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
@@ -302,6 +314,12 @@ pub fn par_garg_konemann_mcf(
             elapsed_time,
         });
 
+        if let Some(target_flow_val) = target_flow {
+            if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
+                break;
+            }
+        }
+
         if iteration % 10000 == 0 {
             println!(
                 "Iteration {}: Current flow scaled sum: {} \t Current elapsed: {:?}",
@@ -327,6 +345,7 @@ pub fn fleischer_fptas_mcf(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
     epsilon: f64,
+    target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let delta = (1.0f64 + epsilon)
         * ((1.0f64 + epsilon) * (graph.node_count() as f64)).powf(-1.0f64 / epsilon);
@@ -462,6 +481,12 @@ pub fn fleischer_fptas_mcf(
             elapsed_time,
         });
 
+        if let Some(target_flow_val) = target_flow {
+            if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
+                break;
+            }
+        }
+
         if iteration % 10000 == 0 {
             println!(
                 "FPTAS r-iteration {}: Current total flow sum: {:.6} \t Elapsed: {:?}",
@@ -484,6 +509,7 @@ pub fn adaptive_garg_konemann_mcf(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
     epsilon: f64,
+    target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
     let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
@@ -601,6 +627,12 @@ pub fn adaptive_garg_konemann_mcf(
             elapsed_time,
         });
 
+        if let Some(target_flow_val) = target_flow {
+            if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
+                break;
+            }
+        }
+
         if iteration % 10000 == 0 {
             println!(
                 "Adaptive Iteration {}: Current flow scaled sum: {} \t Current elapsed: {:?}",
@@ -626,6 +658,7 @@ pub fn par_adaptive_garg_konemann_mcf(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
     epsilon: f64,
+    target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
     let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
@@ -752,6 +785,12 @@ pub fn par_adaptive_garg_konemann_mcf(
             current_flow_sum,
             elapsed_time,
         });
+
+        if let Some(target_flow_val) = target_flow {
+            if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
+                break;
+            }
+        }
 
         if iteration % 10000 == 0 {
             println!(

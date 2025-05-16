@@ -5,6 +5,7 @@ use benchmark_rust::solvers::garg_konneman::{
     par_adaptive_garg_konemann_mcf, par_garg_konemann_mcf,
 };
 use benchmark_rust::utils::commodities_from_traffic_matrix;
+use std::collections::HashMap; // Added for storing true flows
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -51,6 +52,7 @@ fn run_single_benchmark(
     algorithm_enum: Algorithm,
     epsilon: f64,
     base_path: &PathBuf,
+    true_flow: Option<f64>, // This parameter is already here
 ) -> BenchmarkResult {
     let start_time = Instant::now();
 
@@ -114,14 +116,14 @@ fn run_single_benchmark(
 
     let solver_call_time = Instant::now();
     let solve_result = match algorithm_enum {
-        Algorithm::GargKonemann => garg_konemann_mcf(&graph, &commodities, epsilon),
-        Algorithm::ParGargKonemann => par_garg_konemann_mcf(&graph, &commodities, epsilon),
-        Algorithm::FleischerFPTAS => fleischer_fptas_mcf(&graph, &commodities, epsilon),
+        Algorithm::GargKonemann => garg_konemann_mcf(&graph, &commodities, epsilon, true_flow),
+        Algorithm::ParGargKonemann => par_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow),
+        Algorithm::FleischerFPTAS => fleischer_fptas_mcf(&graph, &commodities, epsilon, true_flow),
         Algorithm::AdaptiveGargKonemann => {
-            adaptive_garg_konemann_mcf(&graph, &commodities, epsilon)
+            adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
         }
         Algorithm::ParAdaptiveGargKonnemann => {
-            par_adaptive_garg_konemann_mcf(&graph, &commodities, epsilon)
+            par_adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
         }
     };
     let exec_time_solver_only = solver_call_time.elapsed().as_secs_f64();
@@ -180,13 +182,38 @@ fn run_single_benchmark(
 }
 
 fn main() -> Result<()> {
-    let datasets_to_run = vec!["brain"];
+    // --- Load true flow sums from cvxpy_flows.csv ---
+    let mut true_flow_map: HashMap<String, f64> = HashMap::new();
+    let true_flows_csv_path = "cvxpy_flows.csv"; // Adjust path if necessary
+    match CsvReader::from_path(true_flows_csv_path) {
+        Ok(reader) => {
+            if let Ok(df_true_flows) = reader.finish() {
+                let folder_col = df_true_flows.column("folder")?.utf8()?;
+                let flow_sum_col = df_true_flows.column("flow_sum")?.f64()?;
+
+                for (opt_folder, opt_flow_sum) in folder_col.into_iter().zip(flow_sum_col.into_iter()) {
+                    if let (Some(folder), Some(flow_sum)) = (opt_folder, opt_flow_sum) {
+                        true_flow_map.insert(folder.to_string(), flow_sum);
+                    }
+                }
+                println!("Successfully loaded true flow sums from {}", true_flows_csv_path);
+            } else {
+                eprintln!("Could not read or parse DataFrame from {}", true_flows_csv_path);
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Could not open {}: {}. Proceeding without true flow data.", true_flows_csv_path, e);
+        }
+    }
+    // --- End loading true flow sums ---
+
+    let datasets_to_run = vec!["brain", "cost266"]; // Added cost266 for testing
     let algorithms_to_run = vec![
-        Algorithm::ParAdaptiveGargKonnemann,
-        Algorithm::AdaptiveGargKonemann,
-        Algorithm::FleischerFPTAS,
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
+        Algorithm::FleischerFPTAS,
+        Algorithm::AdaptiveGargKonemann,
+        Algorithm::ParAdaptiveGargKonnemann,
     ];
     let epsilons_to_test = vec![0.1, 0.01];
 
@@ -196,7 +223,8 @@ fn main() -> Result<()> {
     println!("SNDlib base path: {:?}", sndlib_base_path);
     println!("Starting benchmarks...\n");
 
-    for dataset_name in &datasets_to_run {
+    for dataset_name_str in &datasets_to_run {
+        let dataset_name = dataset_name_str.to_string(); // Use owned string for map lookup
         for &algorithm_enum in &algorithms_to_run {
             for &epsilon_val in &epsilons_to_test {
                 println!(
@@ -205,11 +233,21 @@ fn main() -> Result<()> {
                     algorithm_enum.as_str(),
                     epsilon_val
                 );
+
+                // Get the true_flow for the current dataset
+                let true_flow_for_run = true_flow_map.get(&dataset_name).copied();
+                if true_flow_for_run.is_some() {
+                    println!("  Using true_flow: {:?}", true_flow_for_run.unwrap());
+                } else {
+                    println!("  No true_flow found for dataset: {}", dataset_name);
+                }
+
                 let result = run_single_benchmark(
-                    dataset_name,
+                    &dataset_name,
                     algorithm_enum,
                     epsilon_val,
                     &sndlib_base_path,
+                    true_flow_for_run, // Pass it here
                 );
                 println!(
                     "  Finished: Time={:.3}s, Iters={}, MaxCong={:.4}, FlowSum={:.4}, HistLen={}, Error='{}'",
