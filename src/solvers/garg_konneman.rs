@@ -190,6 +190,11 @@ pub fn garg_konemann_mcf(
             );
         }
         iteration += 1;
+
+        if elapsed_time.as_secs() > 60 * 30 {
+            println!("Timeout reached, stopping the algorithm.");
+            break;
+        }
     }
 
     normalize_flows(
@@ -340,11 +345,11 @@ pub fn par_garg_konemann_mcf(
         }
         iteration += 1;
 
-        if elapsed_time.as_secs() > 60 * 60 {
+        if elapsed_time.as_secs() > 60 * 30 {
             println!("Timeout reached, stopping the algorithm.");
             break;
         }
-
+    }
     normalize_flows(
         &mut x_path_flows,
         get_normalization_factor(graph, &f_edge_flows),
@@ -472,6 +477,10 @@ pub fn fleischer_fptas_mcf(
                     );
 
                     iteration += 1;
+                    if elapsed_time.as_secs() > 60 * 30 {
+                        println!("Timeout reached, stopping the algorithm.");
+                        break;
+                    }
 
                     if let Some((next_cost, next_nodes)) = path_search_next {
                         if next_nodes.len() < 2 {
@@ -660,6 +669,10 @@ pub fn adaptive_garg_konemann_mcf(
             );
         }
         iteration += 1;
+        if elapsed_time.as_secs() > 60 * 30 {
+            println!("Timeout reached, stopping the algorithm.");
+            break;
+        }
     }
 
     normalize_flows(
@@ -821,6 +834,10 @@ pub fn par_adaptive_garg_konemann_mcf(
             );
         }
         iteration += 1;
+        if elapsed_time.as_secs() > 60 * 30 {
+            println!("Timeout reached, stopping the algorithm.");
+            break;
+        }
     }
 
     normalize_flows(
