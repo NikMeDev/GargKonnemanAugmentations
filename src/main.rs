@@ -117,7 +117,9 @@ fn run_single_benchmark(
     let solver_call_time = Instant::now();
     let solve_result = match algorithm_enum {
         Algorithm::GargKonemann => garg_konemann_mcf(&graph, &commodities, epsilon, true_flow),
-        Algorithm::ParGargKonemann => par_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow),
+        Algorithm::ParGargKonemann => {
+            par_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
+        }
         Algorithm::FleischerFPTAS => fleischer_fptas_mcf(&graph, &commodities, epsilon, true_flow),
         Algorithm::AdaptiveGargKonemann => {
             adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
@@ -195,24 +197,62 @@ fn main() -> Result<()> {
                     let folder_col = folder_series.str()?;
                     let flow_sum_col = flow_sum_series.f64()?;
 
-                    for (opt_folder, opt_flow_sum) in folder_col.into_iter().zip(flow_sum_col.into_iter()) {
+                    for (opt_folder, opt_flow_sum) in
+                        folder_col.into_iter().zip(flow_sum_col.into_iter())
+                    {
                         if let (Some(folder), Some(flow_sum)) = (opt_folder, opt_flow_sum) {
                             true_flow_map.insert(folder.to_string(), flow_sum);
                         }
                     }
-                    println!("Successfully loaded true flow sums from {}", true_flows_csv_path);
+                    println!(
+                        "Successfully loaded true flow sums from {}",
+                        true_flows_csv_path
+                    );
                 }
                 Err(_) => {
-                    eprintln!("Could not read or parse DataFrame from {}", true_flows_csv_path);
+                    eprintln!(
+                        "Could not read or parse DataFrame from {}",
+                        true_flows_csv_path
+                    );
                 }
             }
         }
         Err(e) => {
-            eprintln!("Warning: Could not open {}: {}. Proceeding without true flow data.", true_flows_csv_path, e);
+            eprintln!(
+                "Warning: Could not open {}: {}. Proceeding without true flow data.",
+                true_flows_csv_path, e
+            );
         }
     }
 
-    let datasets_to_run = vec!["abilene"];
+    let datasets_to_run = vec![
+        "abilene",
+        "dfn-bwin",
+        "di-yuan",
+        "geant",
+        "giul39",
+        "janos-us",
+        "newyork",
+        "nobel-germany",
+        "norway",
+        "pioro40",
+        "sun",
+        "ta2",
+        "atlanta",
+        "cost266",
+        "dfn-gwin",
+        "france",
+        "germany50",
+        "india35",
+        "janos-us-ca",
+        "nobel-eu",
+        "nobel-us",
+        "pdh",
+        "polska",
+        "ta1",
+        "zib54",
+        "brain",
+    ];
     let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
