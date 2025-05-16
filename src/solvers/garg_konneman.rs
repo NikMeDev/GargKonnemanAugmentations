@@ -50,6 +50,14 @@ fn is_close_to_true(current_flow: f64, target_flow: f64, epsilon: f64) {
     target_flow / current_flow <= 1.0 + epsilon
 }
 
+fn should_log(iteration: usize) -> bool {
+    // log if iteration is square of whole number
+    let sqrt = (iteration as f64).sqrt();
+    let sqrt_int = sqrt as usize;
+    let sqrt_int_squared = (sqrt_int * sqrt_int) as usize;
+    iteration == sqrt_int_squared
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IterationInfo {
     pub iteration: usize,
@@ -161,11 +169,13 @@ pub fn garg_konemann_mcf(
         let current_flow_sum: f64 = get_flow_sum(&x_path_flows, c_normalization_factor);
         let elapsed_time = start_time.elapsed().unwrap();
 
-        history.push(IterationInfo {
-            iteration,
-            current_flow_sum,
-            elapsed_time,
-        });
+        if should_log(iteration) {
+            history.push(IterationInfo {
+                iteration,
+                current_flow_sum,
+                elapsed_time,
+            });
+        }
 
         if let Some(target_flow_val) = target_flow {
             if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
@@ -308,11 +318,13 @@ pub fn par_garg_konemann_mcf(
         let current_flow_sum: f64 = get_flow_sum(&x_path_flows, c_normalization_factor);
         let elapsed_time = start_time.elapsed().unwrap();
 
-        history.push(IterationInfo {
-            iteration,
-            current_flow_sum,
-            elapsed_time,
-        });
+        if should_log(iteration) {
+            history.push(IterationInfo {
+                iteration,
+                current_flow_sum,
+                elapsed_time,
+            });
+        }
 
         if let Some(target_flow_val) = target_flow {
             if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
@@ -475,11 +487,13 @@ pub fn fleischer_fptas_mcf(
         let current_flow_sum: f64 = get_flow_sum(&x_path_flows, c_normalization_factor);
         let elapsed_time = start_time.elapsed().unwrap();
 
-        history.push(IterationInfo {
-            iteration: iteration,
-            current_flow_sum,
-            elapsed_time,
-        });
+        if should_log(iteration) {
+            history.push(IterationInfo {
+                iteration,
+                current_flow_sum,
+                elapsed_time,
+            });
+        }
 
         if let Some(target_flow_val) = target_flow {
             if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
@@ -621,11 +635,13 @@ pub fn adaptive_garg_konemann_mcf(
         let current_flow_sum: f64 = get_flow_sum(&x_path_flows, c_normalization_factor);
         let elapsed_time = start_time.elapsed().unwrap();
 
-        history.push(IterationInfo {
-            iteration,
-            current_flow_sum,
-            elapsed_time,
-        });
+        if should_log(iteration) {
+            history.push(IterationInfo {
+                iteration,
+                current_flow_sum,
+                elapsed_time,
+            });
+        }
 
         if let Some(target_flow_val) = target_flow {
             if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
@@ -780,11 +796,13 @@ pub fn par_adaptive_garg_konemann_mcf(
         let current_flow_sum: f64 = get_flow_sum(&x_path_flows, c_normalization_factor);
         let elapsed_time = start_time.elapsed().unwrap();
 
-        history.push(IterationInfo {
-            iteration,
-            current_flow_sum,
-            elapsed_time,
-        });
+        if should_log(iteration) {
+            history.push(IterationInfo {
+                iteration,
+                current_flow_sum,
+                elapsed_time,
+            });
+        }
 
         if let Some(target_flow_val) = target_flow {
             if is_close_to_true(current_flow_sum, target_flow_val, epsilon) {
