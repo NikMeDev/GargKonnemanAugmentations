@@ -477,6 +477,7 @@ pub fn fleischer_fptas_mcf(
                     );
 
                     iteration += 1;
+                    let elapsed_time = start_time.elapsed().unwrap();
                     if elapsed_time.as_secs() > 60 * 30 {
                         println!("Timeout reached, stopping the algorithm.");
                         break;
