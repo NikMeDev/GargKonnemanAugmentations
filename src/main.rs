@@ -182,32 +182,37 @@ fn run_single_benchmark(
 }
 
 fn main() -> Result<()> {
-    // --- Load true flow sums from cvxpy_flows.csv ---
     let mut true_flow_map: HashMap<String, f64> = HashMap::new();
-    let true_flows_csv_path = "cvxpy_flows.csv"; // Adjust path if necessary
-    match CsvReader::from_path(true_flows_csv_path) {
-        Ok(reader) => {
-            if let Ok(df_true_flows) = reader.finish() {
-                let folder_col = df_true_flows.column("folder")?.utf8()?;
-                let flow_sum_col = df_true_flows.column("flow_sum")?.f64()?;
+    let true_flows_csv_path = "cvxpy_flows.csv";
+    match File::open(true_flows_csv_path) {
+        Ok(file) => {
+            let reader = CsvReader::new(file);
+            match reader.finish() {
+                Ok(df_true_flows) => {
+                    let folder_series = df_true_flows.column("folder")?;
+                    let flow_sum_series = df_true_flows.column("flow_sum")?;
 
-                for (opt_folder, opt_flow_sum) in folder_col.into_iter().zip(flow_sum_col.into_iter()) {
-                    if let (Some(folder), Some(flow_sum)) = (opt_folder, opt_flow_sum) {
-                        true_flow_map.insert(folder.to_string(), flow_sum);
+                    let folder_col = folder_series.str()?;
+                    let flow_sum_col = flow_sum_series.f64()?;
+
+                    for (opt_folder, opt_flow_sum) in folder_col.into_iter().zip(flow_sum_col.into_iter()) {
+                        if let (Some(folder), Some(flow_sum)) = (opt_folder, opt_flow_sum) {
+                            true_flow_map.insert(folder.to_string(), flow_sum);
+                        }
                     }
+                    println!("Successfully loaded true flow sums from {}", true_flows_csv_path);
                 }
-                println!("Successfully loaded true flow sums from {}", true_flows_csv_path);
-            } else {
-                eprintln!("Could not read or parse DataFrame from {}", true_flows_csv_path);
+                Err(_) => {
+                    eprintln!("Could not read or parse DataFrame from {}", true_flows_csv_path);
+                }
             }
         }
         Err(e) => {
             eprintln!("Warning: Could not open {}: {}. Proceeding without true flow data.", true_flows_csv_path, e);
         }
     }
-    // --- End loading true flow sums ---
 
-    let datasets_to_run = vec!["brain", "cost266"]; // Added cost266 for testing
+    let datasets_to_run = vec!["abilene"];
     let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
@@ -224,7 +229,7 @@ fn main() -> Result<()> {
     println!("Starting benchmarks...\n");
 
     for dataset_name_str in &datasets_to_run {
-        let dataset_name = dataset_name_str.to_string(); // Use owned string for map lookup
+        let dataset_name = dataset_name_str.to_string();
         for &algorithm_enum in &algorithms_to_run {
             for &epsilon_val in &epsilons_to_test {
                 println!(

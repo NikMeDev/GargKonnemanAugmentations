@@ -51,6 +51,7 @@ fn is_close_to_true(current_flow: f64, target_flow: f64, epsilon: f64) -> bool {
 }
 
 fn should_log(iteration: usize) -> bool {
+    // log if iteration is square of whole number
     let sqrt = (iteration as f64).sqrt();
     let sqrt_int = sqrt as usize;
     let sqrt_int_squared = (sqrt_int * sqrt_int) as usize;
@@ -733,7 +734,14 @@ pub fn par_adaptive_garg_konemann_mcf(
                     if a.is_none() {
                         return b;
                     }
-                    history.p } else {
+                    if b.is_none() {
+                        return a;
+                    }
+                    let (cost_a, path_a) = a.unwrap();
+                    let (cost_b, path_b) = b.unwrap();
+                    if cost_a < cost_b {
+                        Some((cost_a, path_a))
+                    } else {
                         Some((cost_b, path_b))
                     }
                 },
