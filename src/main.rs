@@ -5,7 +5,7 @@ use benchmark_rust::solvers::garg_konneman::{
     par_adaptive_garg_konemann_mcf, par_garg_konemann_mcf,
 };
 use benchmark_rust::utils::commodities_from_traffic_matrix;
-use std::collections::HashMap; // Added for storing true flows
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -52,7 +52,7 @@ fn run_single_benchmark(
     algorithm_enum: Algorithm,
     epsilon: f64,
     base_path: &PathBuf,
-    true_flow: Option<f64>, // This parameter is already here
+    true_flow: Option<f64>,
 ) -> BenchmarkResult {
     let start_time = Instant::now();
 
@@ -279,7 +279,6 @@ fn main() -> Result<()> {
                     epsilon_val
                 );
 
-                // Get the true_flow for the current dataset
                 let true_flow_for_run = true_flow_map.get(&dataset_name).copied();
                 if true_flow_for_run.is_some() {
                     println!("  Using true_flow: {:?}", true_flow_for_run.unwrap());
