@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ndarray::Array2;
-use petgraph::graph::DiGraph;
 use petgraph::Graph;
+use petgraph::graph::DiGraph;
 use quick_xml::de::from_reader;
 use std::collections::HashMap;
 use std::fs::File;
@@ -9,6 +9,7 @@ use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
 
+use super::utils::normalize_traffic_matrix;
 use super::xml_models::Network;
 
 type GraphType = DiGraph<String, f64>;
@@ -20,14 +21,6 @@ pub fn resolve_sndlib_base_path() -> PathBuf {
         eprintln!("Warning: Default SNDlib path not found. Using current directory.");
     }
     base_path
-}
-
-fn normalize_traffic_matrix(traffic_mat: &mut Array2<f64>) {
-    let max_val = traffic_mat.iter().copied().fold(0.0, f64::max);
-
-    if max_val > 0.0 {
-        *traffic_mat /= max_val;
-    }
 }
 
 pub fn load_graph_and_traffic<P: AsRef<Path>>(

@@ -1,8 +1,15 @@
 use anyhow::Result;
-use benchmark_rust::parsers::sndlib_parser::{load_graph_and_traffic, resolve_sndlib_base_path};
+use benchmark_rust::parsers::gml_parser::{
+    load_graph_and_traffic as load_graph_and_traffic_gml, resolve_gml_base_path,
+};
+use benchmark_rust::parsers::sndlib_parser::{
+    load_graph_and_traffic as load_graph_and_traffic_xml, resolve_sndlib_base_path,
+};
 use benchmark_rust::solvers::garg_konneman::{
-    adaptive_garg_konemann_mcf, fleischer_fptas_mcf, garg_konemann_mcf,
-    par_adaptive_garg_konemann_mcf, par_garg_konemann_mcf,
+    adaptive_adam_garg_konemann_mcf, adaptive_garg_konemann_mcf,
+    adaptive_rmsprop_garg_konemann_mcf, fleischer_fptas_mcf, garg_konemann_mcf,
+    par_adaptive_adam_garg_konemann_mcf, par_adaptive_garg_konemann_mcf,
+    par_adaptive_rmsprop_garg_konemann_mcf, par_garg_konemann_mcf,
 };
 use benchmark_rust::utils::commodities_from_traffic_matrix;
 use std::collections::HashMap;
@@ -20,6 +27,10 @@ enum Algorithm {
     FleischerFPTAS,
     AdaptiveGargKonemann,
     ParAdaptiveGargKonnemann,
+    AdaptiveRmsPropGargKonemann,
+    ParAdaptiveRmsPropGargKonemann,
+    AdaptiveAdamGargKonemann,
+    ParAdaptiveAdamGargKonemann,
 }
 
 impl Algorithm {
@@ -30,6 +41,10 @@ impl Algorithm {
             Algorithm::FleischerFPTAS => "FleischerFPTAS",
             Algorithm::AdaptiveGargKonemann => "AdaptiveGargKonemann",
             Algorithm::ParAdaptiveGargKonnemann => "ParAdaptiveGargKonneman",
+            Algorithm::AdaptiveRmsPropGargKonemann => "AdaptiveRmsPropGargKonemann",
+            Algorithm::ParAdaptiveRmsPropGargKonemann => "ParAdaptiveRmsPropGargKonemann",
+            Algorithm::AdaptiveAdamGargKonemann => "AdaptiveAdamGargKonemann",
+            Algorithm::ParAdaptiveAdamGargKonemann => "ParAdaptiveAdamGargKonemann",
         }
     }
 }
@@ -51,36 +66,41 @@ fn run_single_benchmark(
     dataset_name: &str,
     algorithm_enum: Algorithm,
     epsilon: f64,
+    gml_base_path: &PathBuf,
     base_path: &PathBuf,
     true_flow: Option<f64>,
 ) -> BenchmarkResult {
     let start_time = Instant::now();
 
-    let mut path_candidate = base_path
-        .join(dataset_name)
-        .join(format!("{}.xml", dataset_name));
-    if !path_candidate.exists() {
-        path_candidate = base_path.join(format!("{}.xml", dataset_name));
-    }
-
     let default_error_history = "[]".to_string();
+    let gml_dataset_path = gml_base_path.join(dataset_name);
+    let graph_load_result = if gml_dataset_path.join("graph.gml").exists()
+        && gml_dataset_path.join("traffic_mat.json").exists()
+    {
+        load_graph_and_traffic_gml(&gml_dataset_path)
+    } else {
+        let mut xml_path = base_path
+            .join(dataset_name)
+            .join(format!("{}.xml", dataset_name));
+        if !xml_path.exists() {
+            xml_path = base_path.join(format!("{}.xml", dataset_name));
+        }
 
-    if !path_candidate.exists() {
-        return BenchmarkResult {
-            dataset: dataset_name.to_string(),
-            algorithm: algorithm_enum.as_str().to_string(),
-            epsilon,
-            time_sec: start_time.elapsed().as_secs_f64(),
-            iterations: 0,
-            max_congestion: f64::NAN,
-            flow_sum: f64::NAN,
-            iteration_history_json: default_error_history.clone(),
-            error: format!("Dataset file not found for {}", dataset_name),
-        };
-    }
-    let file_path = path_candidate;
-
-    let graph_load_result = load_graph_and_traffic(file_path);
+        if !xml_path.exists() {
+            return BenchmarkResult {
+                dataset: dataset_name.to_string(),
+                algorithm: algorithm_enum.as_str().to_string(),
+                epsilon,
+                time_sec: start_time.elapsed().as_secs_f64(),
+                iterations: 0,
+                max_congestion: f64::NAN,
+                flow_sum: f64::NAN,
+                iteration_history_json: default_error_history.clone(),
+                error: format!("Dataset files not found for {}", dataset_name),
+            };
+        }
+        load_graph_and_traffic_xml(xml_path)
+    };
     let (graph, traffic_mat) = match graph_load_result {
         Ok(data) => data,
         Err(e) => {
@@ -126,6 +146,18 @@ fn run_single_benchmark(
         }
         Algorithm::ParAdaptiveGargKonnemann => {
             par_adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
+        }
+        Algorithm::AdaptiveRmsPropGargKonemann => {
+            adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
+        }
+        Algorithm::ParAdaptiveRmsPropGargKonemann => {
+            par_adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
+        }
+        Algorithm::AdaptiveAdamGargKonemann => {
+            adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
+        }
+        Algorithm::ParAdaptiveAdamGargKonemann => {
+            par_adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
         }
     };
     let exec_time_solver_only = solver_call_time.elapsed().as_secs_f64();
@@ -253,18 +285,24 @@ fn main() -> Result<()> {
         "zib54",
         "brain",
     ];
-    let algorithms_to_run = vec![
+z    let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
         //Algorithm::FleischerFPTAS,
         Algorithm::AdaptiveGargKonemann,
         Algorithm::ParAdaptiveGargKonnemann,
+        Algorithm::AdaptiveRmsPropGargKonemann,
+        Algorithm::ParAdaptiveRmsPropGargKonemann,
+        Algorithm::AdaptiveAdamGargKonemann,
+        Algorithm::ParAdaptiveAdamGargKonemann,
     ];
     let epsilons_to_test = vec![0.1, 0.01];
 
     let mut all_results: Vec<BenchmarkResult> = Vec::new();
+    let gml_base_path = resolve_gml_base_path();
     let sndlib_base_path = resolve_sndlib_base_path();
 
+    println!("GML base path: {:?}", gml_base_path);
     println!("SNDlib base path: {:?}", sndlib_base_path);
     println!("Starting benchmarks...\n");
 
@@ -290,8 +328,9 @@ fn main() -> Result<()> {
                     &dataset_name,
                     algorithm_enum,
                     epsilon_val,
+                    &gml_base_path,
                     &sndlib_base_path,
-                    true_flow_for_run, // Pass it here
+                    true_flow_for_run,
                 );
                 println!(
                     "  Finished: Time={:.3}s, Iters={}, MaxCong={:.4}, FlowSum={:.4}, HistLen={}, Error='{}'",

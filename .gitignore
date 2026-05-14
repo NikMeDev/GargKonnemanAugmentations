@@ -1,4 +1,7 @@
 /target
 /sndlib_xml
+/networks_gml
 /reference
 /.idea
+*.log
+*.pid
