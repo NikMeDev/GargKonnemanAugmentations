@@ -1,24 +1,169 @@
-use anyhow::Result;
-use anyhow::anyhow;
-use gxhash::HashMap;
-use gxhash::HashMapExt;
-use petgraph::algo::astar;
+use anyhow::{anyhow, Result};
+use gxhash::{HashMap, HashMapExt};
 use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
-use petgraph::visit::{EdgeRef, EdgeIndexable};
+use petgraph::visit::{EdgeRef, EdgeIndexable, NodeIndexable};
 use rayon::prelude::*;
 use serde::Serialize;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 pub type GraphType = DiGraph<String, f64>;
 
+use std::cell::RefCell;
+
+thread_local! {
+    static DIJKSTRA_ENV: RefCell<Option<DijkstraEnv>> = RefCell::new(None);
+}
+
+#[derive(Clone)]
+struct State {
+    cost: f64,
+    position: NodeIndex,
+}
+
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost.total_cmp(&other.cost) == Ordering::Equal && self.position == other.position
+    }
+}
+
+impl Eq for State {}
+
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(other.cost.total_cmp(&self.cost))
+    }
+}
+
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.cost.total_cmp(&self.cost)
+    }
+}
+
+struct DijkstraEnv {
+    distances: Vec<f64>,
+    came_from: Vec<Option<(NodeIndex, EdgeIndex)>>,
+    heap: BinaryHeap<State>,
+    generation: u32,
+    visited_gen: Vec<u32>,
+}
+
+impl DijkstraEnv {
+    fn new(node_count: usize) -> Self {
+        Self {
+            distances: vec![f64::INFINITY; node_count],
+            came_from: vec![None; node_count],
+            heap: BinaryHeap::new(),
+            generation: 0,
+            visited_gen: vec![0; node_count],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.visited_gen.fill(0);
+            self.generation = 1;
+        }
+        self.heap.clear();
+    }
+
+    #[inline(always)]
+    fn get_dist(&self, node: NodeIndex) -> f64 {
+        let idx = node.index();
+        if self.visited_gen[idx] == self.generation {
+            self.distances[idx]
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    #[inline(always)]
+    fn set_dist(&mut self, node: NodeIndex, dist: f64, prev: Option<(NodeIndex, EdgeIndex)>) {
+        let idx = node.index();
+        self.visited_gen[idx] = self.generation;
+        self.distances[idx] = dist;
+        self.came_from[idx] = prev;
+    }
+
+    fn find_path<F>(
+        &mut self,
+        graph: &GraphType,
+        source: NodeIndex,
+        target: NodeIndex,
+        cost_fn: F,
+    ) -> Option<(f64, Vec<NodeIndex>, Vec<EdgeIndex>)>
+    where
+        F: Fn(EdgeIndex, f64) -> f64,
+    {
+        self.clear();
+        self.set_dist(source, 0.0, None);
+        self.heap.push(State { cost: 0.0, position: source });
+
+        let mut found = false;
+
+        while let Some(State { cost, position }) = self.heap.pop() {
+            if position == target {
+                found = true;
+                break;
+            }
+
+            if cost > self.get_dist(position) {
+                continue;
+            }
+
+            for edge_ref in graph.edges(position) {
+                let capacity = *edge_ref.weight();
+                if capacity <= 1e-9 {
+                    continue;
+                }
+
+                let edge_cost = cost_fn(edge_ref.id(), capacity);
+                let next_cost = cost + edge_cost;
+                let next_node = edge_ref.target();
+
+                if next_cost < self.get_dist(next_node) {
+                    self.set_dist(next_node, next_cost, Some((position, edge_ref.id())));
+                    self.heap.push(State { cost: next_cost, position: next_node });
+                }
+            }
+        }
+
+        if found {
+            let mut path_nodes = Vec::new();
+            let mut path_edges = Vec::new();
+            let mut current = target;
+            while let Some((prev_node, edge_id)) = self.came_from[current.index()] {
+                if self.visited_gen[current.index()] != self.generation {
+                    break;
+                }
+                path_nodes.push(current);
+                path_edges.push(edge_id);
+                current = prev_node;
+                if current == source {
+                    break;
+                }
+            }
+            path_nodes.push(source);
+            path_nodes.reverse();
+            path_edges.reverse();
+            Some((self.get_dist(target), path_nodes, path_edges))
+        } else {
+            None
+        }
+    }
+}
+
 fn get_normalization_factor(graph: &GraphType, f_edge_flows: &[f64]) -> f64 {
-    let mut c_normalization_factor = 0.0;
-    for edge_ref in graph.edge_references() {
-        let capacity_u_ij = *edge_ref.weight();
+    let mut c_normalization_factor = 0.0f64;
+    for (idx, edge) in graph.raw_edges().iter().enumerate() {
+        let capacity_u_ij = edge.weight;
         if capacity_u_ij <= 1e-9 {
             continue;
         }
 
-        let flow_f_ij = f_edge_flows[edge_ref.id().index()];
+        let flow_f_ij = f_edge_flows[idx];
         let ratio = flow_f_ij / capacity_u_ij;
         if ratio > c_normalization_factor {
             c_normalization_factor = ratio;
@@ -28,10 +173,8 @@ fn get_normalization_factor(graph: &GraphType, f_edge_flows: &[f64]) -> f64 {
 }
 
 fn get_flow_sum(x_path_flows: &HashMap<Vec<NodeIndex>, f64>, c_normalization_factor: f64) -> f64 {
-    x_path_flows
-        .values()
-        .map(|&flow_val| flow_val / c_normalization_factor)
-        .sum()
+    let sum: f64 = x_path_flows.values().sum();
+    sum / c_normalization_factor
 }
 
 fn normalize_flows(x_path_flows: &mut HashMap<Vec<NodeIndex>, f64>, c_normalization_factor: f64) {
@@ -40,22 +183,20 @@ fn normalize_flows(x_path_flows: &mut HashMap<Vec<NodeIndex>, f64>, c_normalizat
             *flow_val = 0.0;
         }
     } else {
+        let inv = 1.0 / c_normalization_factor;
         for flow_val in x_path_flows.values_mut() {
-            *flow_val /= c_normalization_factor;
+            *flow_val *= inv;
         }
     }
 }
 
 fn is_close_to_true(_current_flow: f64, _target_flow: f64, _epsilon: f64) -> bool {
-    false //target_flow / current_flow <= 1.0 + epsilon
+    false // target_flow / current_flow <= 1.0 + epsilon
 }
 
 fn should_log(iteration: usize) -> bool {
-    // log if iteration is square of whole number
-    let sqrt = (iteration as f64).sqrt();
-    let sqrt_int = sqrt as usize;
-    let sqrt_int_squared = (sqrt_int * sqrt_int) as usize;
-    iteration == sqrt_int_squared
+    let s = (iteration as f64).sqrt() as usize;
+    s * s == iteration
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,46 +278,35 @@ fn select_best_path(
     commodities: &[(NodeIndex, NodeIndex)],
     w_edge_costs: &[f64],
     parallel: bool,
-) -> Option<Vec<NodeIndex>> {
+    env: &mut DijkstraEnv,
+) -> Option<(Vec<NodeIndex>, Vec<EdgeIndex>)> {
     if parallel {
-        let best_result = commodities
+        let node_bound = graph.node_bound();
+        commodities
             .par_iter()
-            .map(|&(source_node, target_node)| {
+            .cloned()
+            .filter_map(|(source_node, target_node)| {
                 if source_node == target_node {
                     return None;
                 }
-
-                astar(
-                    graph,
-                    source_node,
-                    |finish_node| finish_node == target_node,
-                    |edge_ref| {
-                        let capacity_u_e = *edge_ref.weight();
-                        if capacity_u_e <= 1e-9 {
-                            return f64::INFINITY;
-                        }
-                        w_edge_costs[edge_ref.id().index()] / capacity_u_e
-                    },
-                    |_| 0.0,
-                )
-            })
-            .reduce(
-                || None,
-                |a, b| match (a, b) {
-                    (None, x) => x,
-                    (x, None) => x,
-                    (Some((cost_a, path_a)), Some((cost_b, path_b))) => {
-                        if cost_a <= cost_b {
-                            Some((cost_a, path_a))
-                        } else {
-                            Some((cost_b, path_b))
-                        }
+                
+                DIJKSTRA_ENV.with(|cell| {
+                    let mut env_opt = cell.borrow_mut();
+                    
+                    if env_opt.is_none() || env_opt.as_ref().unwrap().distances.len() < node_bound {
+                        *env_opt = Some(DijkstraEnv::new(node_bound));
                     }
-                },
-            );
-        best_result.map(|(_, nodes)| nodes)
+                    
+                    let local_env = env_opt.as_mut().unwrap();
+                    local_env.find_path(graph, source_node, target_node, |edge_id, capacity| {
+                        w_edge_costs[edge_id.index()] / capacity
+                    })
+                })
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, nodes, edges)| (nodes, edges))
     } else {
-        let mut current_best_path_nodes: Option<Vec<NodeIndex>> = None;
+        let mut current_best: Option<(Vec<NodeIndex>, Vec<EdgeIndex>)> = None;
         let mut min_path_overall_cost = f64::INFINITY;
 
         for &(source_node, target_node) in commodities {
@@ -184,29 +314,17 @@ fn select_best_path(
                 continue;
             }
 
-            let path_search_result = astar(
-                graph,
-                source_node,
-                |finish_node| finish_node == target_node,
-                |edge_ref| {
-                    let capacity_u_e = *edge_ref.weight();
-                    if capacity_u_e <= 1e-9 {
-                        return f64::INFINITY;
-                    }
-                    w_edge_costs[edge_ref.id().index()] / capacity_u_e
-                },
-                |_| 0.0,
-            );
-
-            if let Some((path_cost, node_list_path)) = path_search_result {
+            if let Some((path_cost, nodes, edges)) = env.find_path(graph, source_node, target_node, |edge_id, capacity| {
+                w_edge_costs[edge_id.index()] / capacity
+            }) {
                 if path_cost < min_path_overall_cost && path_cost.is_finite() {
                     min_path_overall_cost = path_cost;
-                    current_best_path_nodes = Some(node_list_path);
+                    current_best = Some((nodes, edges));
                 }
             }
         }
 
-        current_best_path_nodes
+        current_best
     }
 }
 
@@ -229,41 +347,27 @@ fn garg_konemann_impl(
     let mut first_moments = if method == OptimizerMethod::Adam { vec![0.0; edge_bound] } else { vec![] };
     let mut last_updated_step = if is_adaptive { vec![0_usize; edge_bound] } else { vec![] };
 
-    let m = graph.edge_count();
-    let threshold = (m as f64).ln() / (epsilon * epsilon);
-
     let mut history: Vec<IterationInfo> = Vec::new();
     let mut iteration = 0;
     let start_time = std::time::SystemTime::now();
     let mut max_congestion = 0.0;
 
-    'outer: loop {
-        // if max_congestion >= threshold {
-        //     break 'outer;
-        // }
+    let node_bound = graph.node_bound();
+    let mut env = DijkstraEnv::new(node_bound);
 
-        let p_star_nodes =
-            select_best_path(graph, commodities, &w_edge_costs, parallel).unwrap_or_default();
+    'outer: loop {
+        let (p_star_nodes, p_star_edges) =
+            select_best_path(graph, commodities, &w_edge_costs, parallel, &mut env).unwrap_or_default();
+        
         if p_star_nodes.len() < 2 {
             break 'outer;
         }
 
         let mut p_star_edges_details: Vec<(EdgeIndex, f64)> =
-            Vec::with_capacity(p_star_nodes.len().saturating_sub(1));
+            Vec::with_capacity(p_star_edges.len());
         let mut u_bottleneck_capacity = f64::INFINITY;
 
-        for i in 0..(p_star_nodes.len() - 1) {
-            let node_u_idx = p_star_nodes[i];
-            let node_v_idx = p_star_nodes[i + 1];
-
-            let edge_id = graph.find_edge(node_u_idx, node_v_idx).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Edge from path {:?} -> {:?} not found in graph",
-                    node_u_idx,
-                    node_v_idx
-                )
-            })?;
-
+        for &edge_id in &p_star_edges {
             let edge_capacity_u_ij = *graph.edge_weight(edge_id).unwrap();
             p_star_edges_details.push((edge_id, edge_capacity_u_ij));
 
@@ -273,6 +377,8 @@ fn garg_konemann_impl(
         }
 
         *x_path_flows.entry(p_star_nodes).or_insert(0.0) += u_bottleneck_capacity;
+
+        let mut needs_scaling = false;
 
         for &(edge_id, capacity_u_e) in &p_star_edges_details {
             let idx = edge_id.index();
@@ -301,6 +407,16 @@ fn garg_konemann_impl(
 
             let cost_w_e = &mut w_edge_costs[idx];
             *cost_w_e *= multiplier;
+            
+            if *cost_w_e > 1e250 {
+                needs_scaling = true;
+            }
+        }
+
+        if needs_scaling {
+            for w in w_edge_costs.iter_mut() {
+                *w *= 1e-200;
+            }
         }
 
         let c_normalization_factor = get_normalization_factor(graph, &f_edge_flows);
@@ -321,7 +437,7 @@ fn garg_konemann_impl(
             }
         }
 
-        if iteration % 10000 == 0 {
+        if iteration % 100000 == 0 {
             println!(
                 "Iteration {}: Current flow scaled sum: {} \t Current elapsed: {:?}",
                 iteration, current_flow_sum, elapsed_time,
@@ -329,7 +445,7 @@ fn garg_konemann_impl(
         }
         iteration += 1;
         
-        if elapsed_time.as_secs() > 60 * 10 {
+        if elapsed_time.as_secs() > 10 {
             println!("Timeout reached, stopping the algorithm.");
             break;
         }
@@ -429,11 +545,7 @@ pub fn fleischer_fptas_mcf(
         * ((1.0f64 + epsilon) * (graph.node_count() as f64)).powf(-1.0f64 / epsilon);
 
     let edge_bound = graph.edge_bound();
-    let mut l_edge_lengths = vec![0.0; edge_bound];
-    for edge_ref in graph.edge_references() {
-        l_edge_lengths[edge_ref.id().index()] = delta;
-    }
-
+    let mut l_edge_lengths = vec![delta; edge_bound];
     let mut f_edge_flows = vec![0.0; edge_bound];
 
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
@@ -446,6 +558,9 @@ pub fn fleischer_fptas_mcf(
     let r_max = (log_val / log_base).ceil() as usize;
 
     let mut iteration = 0;
+    
+    let node_bound = graph.node_bound();
+    let mut env = DijkstraEnv::new(node_bound);
 
     for r_iter_val in 1..=r_max {
         for &(source_node, target_node) in commodities {
@@ -453,17 +568,16 @@ pub fn fleischer_fptas_mcf(
                 continue;
             }
 
-            let path_search_initial = astar(
+            let path_search_initial = env.find_path(
                 graph,
                 source_node,
-                |finish_node| finish_node == target_node,
-                |edge_ref| l_edge_lengths[edge_ref.id().index()],
-                |_| 0.0,
+                target_node,
+                |edge_id, _| l_edge_lengths[edge_id.index()]
             );
 
             iteration += 1;
 
-            if let Some((mut current_path_cost, mut current_path_nodes)) = path_search_initial {
+            if let Some((mut current_path_cost, mut current_path_nodes, mut current_path_edges)) = path_search_initial {
                 if current_path_nodes.len() < 2 {
                     continue;
                 }
@@ -473,26 +587,11 @@ pub fn fleischer_fptas_mcf(
                 while current_path_cost < threshold_r {
                     let mut u_bottleneck = f64::INFINITY;
                     let mut path_edges_details: Vec<(EdgeIndex, f64)> =
-                        Vec::with_capacity(current_path_nodes.len().saturating_sub(1));
+                        Vec::with_capacity(current_path_edges.len());
 
-                    for i in 0..(current_path_nodes.len() - 1) {
-                        let u_idx = current_path_nodes[i];
-                        let v_idx = current_path_nodes[i + 1];
-
-                        let edge_id = graph.find_edge(u_idx, v_idx).ok_or_else(|| {
-                            anyhow!(
-                                "Edge from path {:?} -> {:?} not found in graph",
-                                u_idx,
-                                v_idx
-                            )
-                        })?;
+                    for &edge_id in &current_path_edges {
                         let capacity_u_e = *graph.edge_weight(edge_id).ok_or_else(|| {
-                            anyhow!(
-                                "Capacity for edge {:?} (path component {:?}->{:?}) not found",
-                                edge_id,
-                                u_idx,
-                                v_idx
-                            )
+                            anyhow!("Capacity for edge {:?} not found", edge_id)
                         })?;
 
                         if capacity_u_e < u_bottleneck {
@@ -516,12 +615,11 @@ pub fn fleischer_fptas_mcf(
                         *l_e *= 1.0 + (epsilon * u_bottleneck / capacity_u_e);
                     }
 
-                    let path_search_next = astar(
+                    let path_search_next = env.find_path(
                         graph,
                         source_node,
-                        |finish_node| finish_node == target_node,
-                        |edge_ref| l_edge_lengths[edge_ref.id().index()],
-                        |_| 0.0,
+                        target_node,
+                        |edge_id, _| l_edge_lengths[edge_id.index()]
                     );
 
                     iteration += 1;
@@ -531,12 +629,13 @@ pub fn fleischer_fptas_mcf(
                         break;
                     }
 
-                    if let Some((next_cost, next_nodes)) = path_search_next {
+                    if let Some((next_cost, next_nodes, next_edges)) = path_search_next {
                         if next_nodes.len() < 2 {
                             current_path_cost = f64::INFINITY;
                         } else {
                             current_path_cost = next_cost;
                             current_path_nodes = next_nodes;
+                            current_path_edges = next_edges;
                         }
                     } else {
                         current_path_cost = f64::INFINITY;
