@@ -14,7 +14,6 @@ use benchmark_rust::solvers::garg_konneman::{
 use benchmark_rust::utils::commodities_from_traffic_matrix;
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use polars::prelude::*;
@@ -60,159 +59,6 @@ struct BenchmarkResult {
     flow_sum: f64,
     iteration_history_json: String,
     error: String,
-}
-
-fn run_single_benchmark(
-    dataset_name: &str,
-    algorithm_enum: Algorithm,
-    epsilon: f64,
-    gml_base_path: &PathBuf,
-    base_path: &PathBuf,
-    true_flow: Option<f64>,
-) -> BenchmarkResult {
-    let start_time = Instant::now();
-
-    let default_error_history = "[]".to_string();
-    let gml_dataset_path = gml_base_path.join(dataset_name);
-    let graph_load_result = if gml_dataset_path.join("graph.gml").exists()
-        && gml_dataset_path.join("traffic_mat.json").exists()
-    {
-        load_graph_and_traffic_gml(&gml_dataset_path)
-    } else {
-        let mut xml_path = base_path
-            .join(dataset_name)
-            .join(format!("{}.xml", dataset_name));
-        if !xml_path.exists() {
-            xml_path = base_path.join(format!("{}.xml", dataset_name));
-        }
-
-        if !xml_path.exists() {
-            return BenchmarkResult {
-                dataset: dataset_name.to_string(),
-                algorithm: algorithm_enum.as_str().to_string(),
-                epsilon,
-                time_sec: start_time.elapsed().as_secs_f64(),
-                iterations: 0,
-                max_congestion: f64::NAN,
-                flow_sum: f64::NAN,
-                iteration_history_json: default_error_history.clone(),
-                error: format!("Dataset files not found for {}", dataset_name),
-            };
-        }
-        load_graph_and_traffic_xml(xml_path)
-    };
-    let (graph, traffic_mat) = match graph_load_result {
-        Ok(data) => data,
-        Err(e) => {
-            return BenchmarkResult {
-                dataset: dataset_name.to_string(),
-                algorithm: algorithm_enum.as_str().to_string(),
-                epsilon,
-                time_sec: start_time.elapsed().as_secs_f64(),
-                iterations: 0,
-                max_congestion: f64::NAN,
-                flow_sum: f64::NAN,
-                iteration_history_json: default_error_history.clone(),
-                error: format!("Failed to load graph/traffic: {}", e),
-            };
-        }
-    };
-
-    let commodities = commodities_from_traffic_matrix(graph.node_count(), &traffic_mat, Some(0.1));
-
-    if commodities.is_empty() && graph.node_count() > 0 {
-        return BenchmarkResult {
-            dataset: dataset_name.to_string(),
-            algorithm: algorithm_enum.as_str().to_string(),
-            epsilon,
-            time_sec: start_time.elapsed().as_secs_f64(),
-            iterations: 0,
-            max_congestion: 0.0,
-            flow_sum: 0.0,
-            iteration_history_json: default_error_history.clone(),
-            error: "No commodities found".to_string(),
-        };
-    }
-
-    let solver_call_time = Instant::now();
-    let solve_result = match algorithm_enum {
-        Algorithm::GargKonemann => garg_konemann_mcf(&graph, &commodities, epsilon, true_flow),
-        Algorithm::ParGargKonemann => {
-            par_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::FleischerFPTAS => fleischer_fptas_mcf(&graph, &commodities, epsilon, true_flow),
-        Algorithm::AdaptiveGargKonemann => {
-            adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::ParAdaptiveGargKonnemann => {
-            par_adaptive_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::AdaptiveRmsPropGargKonemann => {
-            adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::ParAdaptiveRmsPropGargKonemann => {
-            par_adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::AdaptiveAdamGargKonemann => {
-            adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-        Algorithm::ParAdaptiveAdamGargKonemann => {
-            par_adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon, true_flow)
-        }
-    };
-    let exec_time_solver_only = solver_call_time.elapsed().as_secs_f64();
-
-    match solve_result {
-        Ok((solution, history)) => {
-            let flow_sum_val: f64 = solution.values().sum();
-            let total_iterations = history.len();
-            let history_json = serde_json::to_string(&history).unwrap_or_else(|e| {
-                eprintln!("Failed to serialize iteration history: {}", e);
-                default_error_history.clone()
-            });
-            let mut max_congestion = 0.0f64;
-            if !solution.is_empty() {
-                for (edge_nodes, flow_value) in &solution {
-                    if let Some(edge_idx) = graph.find_edge(edge_nodes[0], edge_nodes[1]) {
-                        if let Some(capacity) = graph.edge_weight(edge_idx) {
-                            if *capacity > 1e-9 {
-                                let congestion = flow_value / capacity;
-                                if congestion > max_congestion {
-                                    max_congestion = congestion;
-                                }
-                            } else if *flow_value > 1e-9 {
-                                max_congestion = f64::INFINITY;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            BenchmarkResult {
-                dataset: dataset_name.to_string(),
-                algorithm: algorithm_enum.as_str().to_string(),
-                epsilon,
-                time_sec: exec_time_solver_only,
-                iterations: total_iterations,
-                max_congestion,
-                flow_sum: flow_sum_val,
-                iteration_history_json: history_json,
-                error: String::new(),
-            }
-        }
-        Err(e) => BenchmarkResult {
-            dataset: dataset_name.to_string(),
-            algorithm: algorithm_enum.as_str().to_string(),
-            epsilon,
-            time_sec: exec_time_solver_only,
-            iterations: 0,
-            max_congestion: f64::NAN,
-            flow_sum: f64::NAN,
-            iteration_history_json: default_error_history.clone(),
-            error: format!("Solver error: {}", e),
-        },
-    }
 }
 
 fn main() -> Result<()> {
@@ -301,6 +147,7 @@ fn main() -> Result<()> {
     let mut all_results: Vec<BenchmarkResult> = Vec::new();
     let gml_base_path = resolve_gml_base_path();
     let sndlib_base_path = resolve_sndlib_base_path();
+    let default_error_history = "[]".to_string();
 
     println!("GML base path: {:?}", gml_base_path);
     println!("SNDlib base path: {:?}", sndlib_base_path);
@@ -308,32 +155,198 @@ fn main() -> Result<()> {
 
     for dataset_name_str in &datasets_to_run {
         let dataset_name = dataset_name_str.to_string();
+        println!("Processing Dataset: {}", dataset_name);
+
+        let load_start_time = Instant::now();
+
+        let gml_dataset_path = gml_base_path.join(&dataset_name);
+        let graph_load_result = if gml_dataset_path.join("graph.gml").exists()
+            && gml_dataset_path.join("traffic_mat.json").exists()
+        {
+            load_graph_and_traffic_gml(&gml_dataset_path)
+        } else {
+            let mut xml_path = sndlib_base_path
+                .join(&dataset_name)
+                .join(format!("{}.xml", dataset_name));
+            if !xml_path.exists() {
+                xml_path = sndlib_base_path.join(format!("{}.xml", dataset_name));
+            }
+
+            if !xml_path.exists() {
+                let err_msg = format!("Dataset files not found for {}", dataset_name);
+                eprintln!("  {}", err_msg);
+                
+                for &algorithm_enum in &algorithms_to_run {
+                    for &epsilon_val in &epsilons_to_test {
+                        all_results.push(BenchmarkResult {
+                            dataset: dataset_name.clone(),
+                            algorithm: algorithm_enum.as_str().to_string(),
+                            epsilon: epsilon_val,
+                            time_sec: load_start_time.elapsed().as_secs_f64(),
+                            iterations: 0,
+                            max_congestion: f64::NAN,
+                            flow_sum: f64::NAN,
+                            iteration_history_json: default_error_history.clone(),
+                            error: err_msg.clone(),
+                        });
+                    }
+                }
+                continue;
+            }
+            load_graph_and_traffic_xml(xml_path)
+        };
+
+        let (graph, traffic_mat) = match graph_load_result {
+            Ok(data) => data,
+            Err(e) => {
+                let err_msg = format!("Failed to load graph/traffic: {}", e);
+                eprintln!("  {}", err_msg);
+
+                for &algorithm_enum in &algorithms_to_run {
+                    for &epsilon_val in &epsilons_to_test {
+                        all_results.push(BenchmarkResult {
+                            dataset: dataset_name.clone(),
+                            algorithm: algorithm_enum.as_str().to_string(),
+                            epsilon: epsilon_val,
+                            time_sec: load_start_time.elapsed().as_secs_f64(),
+                            iterations: 0,
+                            max_congestion: f64::NAN,
+                            flow_sum: f64::NAN,
+                            iteration_history_json: default_error_history.clone(),
+                            error: err_msg.clone(),
+                        });
+                    }
+                }
+                continue;
+            }
+        };
+
+        let commodities =
+            commodities_from_traffic_matrix(graph.node_count(), &traffic_mat, Some(0.1));
+
+        if commodities.is_empty() && graph.node_count() > 0 {
+            let err_msg = "No commodities found".to_string();
+            eprintln!("  {}", err_msg);
+
+            for &algorithm_enum in &algorithms_to_run {
+                for &epsilon_val in &epsilons_to_test {
+                    all_results.push(BenchmarkResult {
+                        dataset: dataset_name.clone(),
+                        algorithm: algorithm_enum.as_str().to_string(),
+                        epsilon: epsilon_val,
+                        time_sec: load_start_time.elapsed().as_secs_f64(),
+                        iterations: 0,
+                        max_congestion: 0.0,
+                        flow_sum: 0.0,
+                        iteration_history_json: default_error_history.clone(),
+                        error: err_msg.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        let true_flow_for_run = true_flow_map.get(&dataset_name).copied();
+        if true_flow_for_run.is_some() {
+            println!("  Using true_flow: {:?}", true_flow_for_run.unwrap());
+        } else {
+            println!("  No true_flow found for dataset: {}", dataset_name);
+        }
+
         for &algorithm_enum in &algorithms_to_run {
             for &epsilon_val in &epsilons_to_test {
                 println!(
-                    "Running: Dataset={}, Algorithm={}, Epsilon={}",
-                    dataset_name,
+                    "  Running: Algorithm={}, Epsilon={}",
                     algorithm_enum.as_str(),
                     epsilon_val
                 );
 
-                let true_flow_for_run = true_flow_map.get(&dataset_name).copied();
-                if true_flow_for_run.is_some() {
-                    println!("  Using true_flow: {:?}", true_flow_for_run.unwrap());
-                } else {
-                    println!("  No true_flow found for dataset: {}", dataset_name);
-                }
+                let solver_call_time = Instant::now();
+                let solve_result = match algorithm_enum {
+                    Algorithm::GargKonemann => {
+                        garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::ParGargKonemann => {
+                        par_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::FleischerFPTAS => {
+                        fleischer_fptas_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::AdaptiveGargKonemann => {
+                        adaptive_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::ParAdaptiveGargKonnemann => {
+                        par_adaptive_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::AdaptiveRmsPropGargKonemann => {
+                        adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::ParAdaptiveRmsPropGargKonemann => {
+                        par_adaptive_rmsprop_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::AdaptiveAdamGargKonemann => {
+                        adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::ParAdaptiveAdamGargKonemann => {
+                        par_adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                };
+                let exec_time_solver_only = solver_call_time.elapsed().as_secs_f64();
 
-                let result = run_single_benchmark(
-                    &dataset_name,
-                    algorithm_enum,
-                    epsilon_val,
-                    &gml_base_path,
-                    &sndlib_base_path,
-                    true_flow_for_run,
-                );
+                let result = match solve_result {
+                    Ok((solution, history)) => {
+                        let flow_sum_val: f64 = solution.values().sum();
+                        let total_iterations = history.len();
+                        let history_json = serde_json::to_string(&history).unwrap_or_else(|e| {
+                            eprintln!("Failed to serialize iteration history: {}", e);
+                            default_error_history.clone()
+                        });
+                        let mut max_congestion = 0.0f64;
+                        if !solution.is_empty() {
+                            for (edge_nodes, flow_value) in &solution {
+                                if let Some(edge_idx) = graph.find_edge(edge_nodes[0], edge_nodes[1]) {
+                                    if let Some(capacity) = graph.edge_weight(edge_idx) {
+                                        if *capacity > 1e-9 {
+                                            let congestion = flow_value / capacity;
+                                            if congestion > max_congestion {
+                                                max_congestion = congestion;
+                                            }
+                                        } else if *flow_value > 1e-9 {
+                                            max_congestion = f64::INFINITY;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        BenchmarkResult {
+                            dataset: dataset_name.clone(),
+                            algorithm: algorithm_enum.as_str().to_string(),
+                            epsilon: epsilon_val,
+                            time_sec: exec_time_solver_only,
+                            iterations: total_iterations,
+                            max_congestion,
+                            flow_sum: flow_sum_val,
+                            iteration_history_json: history_json,
+                            error: String::new(),
+                        }
+                    }
+                    Err(e) => BenchmarkResult {
+                        dataset: dataset_name.clone(),
+                        algorithm: algorithm_enum.as_str().to_string(),
+                        epsilon: epsilon_val,
+                        time_sec: exec_time_solver_only,
+                        iterations: 0,
+                        max_congestion: f64::NAN,
+                        flow_sum: f64::NAN,
+                        iteration_history_json: default_error_history.clone(),
+                        error: format!("Solver error: {}", e),
+                    },
+                };
+
                 println!(
-                    "  Finished: Time={:.3}s, Iters={}, MaxCong={:.4}, FlowSum={:.4}, HistLen={}, Error='{}'",
+                    "    Finished: Time={:.3}s, Iters={}, MaxCong={:.4}, FlowSum={:.4}, HistLen={}, Error='{}'",
                     result.time_sec,
                     result.iterations,
                     result.max_congestion,
