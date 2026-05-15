@@ -4,13 +4,13 @@ use gxhash::HashMap;
 use gxhash::HashMapExt;
 use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, EdgeIndex, NodeIndex};
-use petgraph::visit::EdgeRef;
+use petgraph::visit::{EdgeRef, EdgeIndexable};
 use rayon::prelude::*;
 use serde::Serialize;
 
 pub type GraphType = DiGraph<String, f64>;
 
-fn get_normalization_factor(graph: &GraphType, f_edge_flows: &HashMap<EdgeIndex, f64>) -> f64 {
+fn get_normalization_factor(graph: &GraphType, f_edge_flows: &[f64]) -> f64 {
     let mut c_normalization_factor = 0.0;
     for edge_ref in graph.edge_references() {
         let capacity_u_ij = *edge_ref.weight();
@@ -18,7 +18,7 @@ fn get_normalization_factor(graph: &GraphType, f_edge_flows: &HashMap<EdgeIndex,
             continue;
         }
 
-        let flow_f_ij = f_edge_flows.get(&edge_ref.id()).unwrap_or(&0.0);
+        let flow_f_ij = f_edge_flows[edge_ref.id().index()];
         let ratio = flow_f_ij / capacity_u_ij;
         if ratio > c_normalization_factor {
             c_normalization_factor = ratio;
@@ -47,7 +47,7 @@ fn normalize_flows(x_path_flows: &mut HashMap<Vec<NodeIndex>, f64>, c_normalizat
 }
 
 fn is_close_to_true(current_flow: f64, target_flow: f64, epsilon: f64) -> bool {
-    target_flow / current_flow <= 1.0 + epsilon
+    false //target_flow / current_flow <= 1.0 + epsilon
 }
 
 fn should_log(iteration: usize) -> bool {
@@ -72,16 +72,12 @@ pub fn garg_konemann_mcf(
     target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
-    let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
-    let mut w_edge_costs: HashMap<EdgeIndex, f64> = HashMap::new();
-
-    for edge_ref in graph.edge_references() {
-        f_edge_flows.insert(edge_ref.id(), 0.0);
-        w_edge_costs.insert(edge_ref.id(), 1.0);
-    }
+    
+    let edge_bound = graph.edge_bound();
+    let mut f_edge_flows = vec![0.0; edge_bound];
+    let mut w_edge_costs = vec![1.0; edge_bound];
 
     let m = graph.edge_count();
-
     let threshold = (m as f64).ln() / (epsilon * epsilon);
 
     let mut history: Vec<IterationInfo> = Vec::new();
@@ -89,16 +85,11 @@ pub fn garg_konemann_mcf(
     let mut iteration = 0;
     let start_time = std::time::SystemTime::now();
 
+    let mut max_congestion = 0.0;
+
     'outer: loop {
-        for edge_ref in graph.edge_references() {
-            let capacity_u_ij = *edge_ref.weight();
-            if capacity_u_ij <= 1e-9 {
-                continue;
-            }
-            let flow_f_ij = f_edge_flows.get(&edge_ref.id()).unwrap_or(&0.0);
-            if flow_f_ij / capacity_u_ij >= threshold {
-                break 'outer;
-            }
+        if max_congestion >= threshold {
+            break 'outer;
         }
 
         let mut current_best_path_nodes: Option<Vec<NodeIndex>> = None;
@@ -118,7 +109,7 @@ pub fn garg_konemann_mcf(
                     if capacity_u_e <= 1e-9 {
                         return f64::INFINITY;
                     }
-                    w_edge_costs.get(&edge_ref.id()).unwrap_or(&1.0) / capacity_u_e
+                    w_edge_costs[edge_ref.id().index()] / capacity_u_e
                 },
                 |_| 0.0,
             );
@@ -131,9 +122,12 @@ pub fn garg_konemann_mcf(
             }
         }
 
-        let p_star_nodes = current_best_path_nodes.unwrap();
+        let p_star_nodes = match current_best_path_nodes {
+            Some(nodes) => nodes,
+            None => break 'outer,
+        };
 
-        let mut p_star_edges: Vec<EdgeIndex> = Vec::with_capacity(p_star_nodes.len() - 1);
+        let mut p_star_edges: Vec<EdgeIndex> = Vec::with_capacity(p_star_nodes.len().saturating_sub(1));
         let mut u_bottleneck_capacity = f64::INFINITY;
 
         for i in 0..(p_star_nodes.len() - 1) {
@@ -155,13 +149,20 @@ pub fn garg_konemann_mcf(
             }
         }
 
-        *x_path_flows.entry(p_star_nodes.clone()).or_insert(0.0) += u_bottleneck_capacity;
+        *x_path_flows.entry(p_star_nodes).or_insert(0.0) += u_bottleneck_capacity;
 
         for &edge_id in &p_star_edges {
-            *f_edge_flows.get_mut(&edge_id).unwrap() += u_bottleneck_capacity;
+            let idx = edge_id.index();
+            f_edge_flows[idx] += u_bottleneck_capacity;
 
             let capacity_u_e = *graph.edge_weight(edge_id).unwrap();
-            let cost_w_e = w_edge_costs.get_mut(&edge_id).unwrap();
+            
+            let congestion = f_edge_flows[idx] / capacity_u_e;
+            if congestion > max_congestion {
+                max_congestion = congestion;
+            }
+
+            let cost_w_e = &mut w_edge_costs[idx];
             *cost_w_e *= 1.0 + (epsilon * u_bottleneck_capacity / capacity_u_e);
         }
 
@@ -216,16 +217,12 @@ pub fn par_garg_konemann_mcf(
     target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
-    let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
-    let mut w_edge_costs: HashMap<EdgeIndex, f64> = HashMap::new();
-
-    for edge_ref in graph.edge_references() {
-        f_edge_flows.insert(edge_ref.id(), 0.0);
-        w_edge_costs.insert(edge_ref.id(), 1.0);
-    }
+    
+    let edge_bound = graph.edge_bound();
+    let mut f_edge_flows = vec![0.0; edge_bound];
+    let mut w_edge_costs = vec![1.0; edge_bound];
 
     let m = graph.edge_count();
-
     let threshold = (m as f64).ln() / (epsilon * epsilon);
 
     let mut history: Vec<IterationInfo> = Vec::new();
@@ -233,16 +230,11 @@ pub fn par_garg_konemann_mcf(
     let mut iteration = 0;
     let start_time = std::time::SystemTime::now();
 
+    let mut max_congestion = 0.0;
+
     'outer: loop {
-        for edge_ref in graph.edge_references() {
-            let capacity_u_ij = *edge_ref.weight();
-            if capacity_u_ij <= 1e-9 {
-                continue;
-            }
-            let flow_f_ij = f_edge_flows.get(&edge_ref.id()).unwrap_or(&0.0);
-            if flow_f_ij / capacity_u_ij >= threshold {
-                break 'outer;
-            }
+        if max_congestion >= threshold {
+            break 'outer;
         }
 
         let best_result = commodities
@@ -252,7 +244,7 @@ pub fn par_garg_konemann_mcf(
                     return None;
                 }
 
-                let path_search_result = astar(
+                astar(
                     graph,
                     source_node,
                     |finish_node| finish_node == target_node,
@@ -261,31 +253,30 @@ pub fn par_garg_konemann_mcf(
                         if capacity_u_e <= 1e-9 {
                             return f64::INFINITY;
                         }
-                        w_edge_costs.get(&edge_ref.id()).unwrap_or(&1.0) / capacity_u_e
+                        w_edge_costs[edge_ref.id().index()] / capacity_u_e
                     },
                     |_| 0.0,
-                );
-                path_search_result
+                )
             })
             .reduce(
                 || None,
-                |a, b| {
-                    if a.is_none() {
-                        return b;
-                    }
-                    if b.is_none() {
-                        return a;
-                    }
-                    let (cost_a, path_a) = a.unwrap();
-                    let (cost_b, path_b) = b.unwrap();
-                    if cost_a < cost_b {
-                        Some((cost_a, path_a))
-                    } else {
-                        Some((cost_b, path_b))
+                |a, b| match (a, b) {
+                    (None, x) => x,
+                    (x, None) => x,
+                    (Some((cost_a, path_a)), Some((cost_b, path_b))) => {
+                        if cost_a <= cost_b {
+                            Some((cost_a, path_a))
+                        } else {
+                            Some((cost_b, path_b))
+                        }
                     }
                 },
             );
-        let (_, p_star_nodes) = best_result.unwrap();
+
+        let p_star_nodes = match best_result {
+            Some((_, nodes)) => nodes,
+            None => break 'outer,
+        };
 
         let mut p_star_edges: Vec<EdgeIndex> = Vec::with_capacity(p_star_nodes.len() - 1);
         let mut u_bottleneck_capacity = f64::INFINITY;
@@ -309,13 +300,20 @@ pub fn par_garg_konemann_mcf(
             }
         }
 
-        *x_path_flows.entry(p_star_nodes.clone()).or_insert(0.0) += u_bottleneck_capacity;
+        *x_path_flows.entry(p_star_nodes).or_insert(0.0) += u_bottleneck_capacity;
 
         for &edge_id in &p_star_edges {
-            *f_edge_flows.get_mut(&edge_id).unwrap() += u_bottleneck_capacity;
+            let idx = edge_id.index();
+            f_edge_flows[idx] += u_bottleneck_capacity;
 
             let capacity_u_e = *graph.edge_weight(edge_id).unwrap();
-            let cost_w_e = w_edge_costs.get_mut(&edge_id).unwrap();
+            
+            let congestion = f_edge_flows[idx] / capacity_u_e;
+            if congestion > max_congestion {
+                max_congestion = congestion;
+            }
+
+            let cost_w_e = &mut w_edge_costs[idx];
             *cost_w_e *= 1.0 + (epsilon * u_bottleneck_capacity / capacity_u_e);
         }
 
@@ -350,6 +348,7 @@ pub fn par_garg_konemann_mcf(
             break;
         }
     }
+    
     normalize_flows(
         &mut x_path_flows,
         get_normalization_factor(graph, &f_edge_flows),
@@ -371,15 +370,13 @@ pub fn fleischer_fptas_mcf(
     let delta = (1.0f64 + epsilon)
         * ((1.0f64 + epsilon) * (graph.node_count() as f64)).powf(-1.0f64 / epsilon);
 
-    let mut l_edge_lengths: HashMap<EdgeIndex, f64> = graph
-        .edge_references()
-        .map(|edge_ref| (edge_ref.id(), delta))
-        .collect();
+    let edge_bound = graph.edge_bound();
+    let mut l_edge_lengths = vec![0.0; edge_bound];
+    for edge_ref in graph.edge_references() {
+        l_edge_lengths[edge_ref.id().index()] = delta;
+    }
 
-    let mut f_edge_flows: HashMap<EdgeIndex, f64> = graph
-        .edge_references()
-        .map(|edge_ref| (edge_ref.id(), 0.0))
-        .collect();
+    let mut f_edge_flows = vec![0.0; edge_bound];
 
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
     let mut history: Vec<IterationInfo> = Vec::new();
@@ -402,11 +399,7 @@ pub fn fleischer_fptas_mcf(
                 graph,
                 source_node,
                 |finish_node| finish_node == target_node,
-                |edge_ref| {
-                    *l_edge_lengths
-                        .get(&edge_ref.id())
-                        .expect("Edge length missing for A* (initial path search)")
-                },
+                |edge_ref| l_edge_lengths[edge_ref.id().index()],
                 |_| 0.0,
             );
 
@@ -458,21 +451,18 @@ pub fn fleischer_fptas_mcf(
                         .entry(current_path_nodes.clone())
                         .or_insert(0.0) += u_bottleneck;
 
-                    for (edge_id, capacity_u_e) in &path_edges_details {
-                        *f_edge_flows.get_mut(edge_id).unwrap() += u_bottleneck;
-                        let l_e = l_edge_lengths.get_mut(edge_id).unwrap();
-                        *l_e *= 1.0 + (epsilon * u_bottleneck / *capacity_u_e);
+                    for &(edge_id, capacity_u_e) in &path_edges_details {
+                        let idx = edge_id.index();
+                        f_edge_flows[idx] += u_bottleneck;
+                        let l_e = &mut l_edge_lengths[idx];
+                        *l_e *= 1.0 + (epsilon * u_bottleneck / capacity_u_e);
                     }
 
                     let path_search_next = astar(
                         graph,
                         source_node,
                         |finish_node| finish_node == target_node,
-                        |edge_ref| {
-                            *l_edge_lengths
-                                .get(&edge_ref.id())
-                                .expect("Edge length missing for A* (while loop path search)")
-                        },
+                        |edge_ref| l_edge_lengths[edge_ref.id().index()],
                         |_| 0.0,
                     );
 
@@ -546,7 +536,7 @@ enum AdaptiveMethod {
 fn select_best_path(
     graph: &GraphType,
     commodities: &[(NodeIndex, NodeIndex)],
-    w_edge_costs: &HashMap<EdgeIndex, f64>,
+    w_edge_costs: &[f64],
     parallel: bool,
 ) -> Option<Vec<NodeIndex>> {
     if parallel {
@@ -566,7 +556,7 @@ fn select_best_path(
                         if capacity_u_e <= 1e-9 {
                             return f64::INFINITY;
                         }
-                        w_edge_costs.get(&edge_ref.id()).unwrap_or(&1.0) / capacity_u_e
+                        w_edge_costs[edge_ref.id().index()] / capacity_u_e
                     },
                     |_| 0.0,
                 )
@@ -577,7 +567,7 @@ fn select_best_path(
                     (None, x) => x,
                     (x, None) => x,
                     (Some((cost_a, path_a)), Some((cost_b, path_b))) => {
-                        if cost_a < cost_b {
+                        if cost_a <= cost_b {
                             Some((cost_a, path_a))
                         } else {
                             Some((cost_b, path_b))
@@ -604,7 +594,7 @@ fn select_best_path(
                     if capacity_u_e <= 1e-9 {
                         return f64::INFINITY;
                     }
-                    w_edge_costs.get(&edge_ref.id()).unwrap_or(&1.0) / capacity_u_e
+                    w_edge_costs[edge_ref.id().index()] / capacity_u_e
                 },
                 |_| 0.0,
             );
@@ -627,32 +617,43 @@ fn adaptive_cost_multiplier(
     grad: f64,
     gk_epsilon: f64,
     step_index: usize,
-    squared_grad_accumulators: &mut HashMap<EdgeIndex, f64>,
-    first_moments: &mut HashMap<EdgeIndex, f64>,
+    squared_grad_accumulators: &mut [f64],
+    first_moments: &mut [f64],
+    last_updated_step: &mut [usize],
 ) -> f64 {
+    let idx = edge_id.index();
+    let k = step_index.saturating_sub(last_updated_step[idx]).saturating_sub(1) as i32;
+
     match method {
         AdaptiveMethod::AdaGrad => {
-            let sum_sq = squared_grad_accumulators.get_mut(&edge_id).unwrap();
-            *sum_sq += grad * grad;
-            let denom = (*sum_sq).sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
+            squared_grad_accumulators[idx] += grad * grad;
+            last_updated_step[idx] = step_index;
+            
+            let denom = squared_grad_accumulators[idx].sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
             1.0 + (gk_epsilon / denom) * grad
         }
         AdaptiveMethod::RmsProp => {
-            let avg_sq = squared_grad_accumulators.get_mut(&edge_id).unwrap();
-            *avg_sq = RMSPROP_BETA * *avg_sq + (1.0 - RMSPROP_BETA) * (grad * grad);
-            let denom = (*avg_sq).sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
+            if k > 0 {
+                squared_grad_accumulators[idx] *= RMSPROP_BETA.powi(k);
+            }
+            squared_grad_accumulators[idx] = RMSPROP_BETA * squared_grad_accumulators[idx] + (1.0 - RMSPROP_BETA) * (grad * grad);
+            last_updated_step[idx] = step_index;
+
+            let denom = squared_grad_accumulators[idx].sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
             1.0 + (gk_epsilon / denom) * grad
         }
         AdaptiveMethod::Adam => {
-            let m_t = first_moments.get_mut(&edge_id).unwrap();
-            let v_t = squared_grad_accumulators.get_mut(&edge_id).unwrap();
-
-            *m_t = ADAM_BETA1 * *m_t + (1.0 - ADAM_BETA1) * grad;
-            *v_t = ADAM_BETA2 * *v_t + (1.0 - ADAM_BETA2) * (grad * grad);
+            if k > 0 {
+                first_moments[idx] *= ADAM_BETA1.powi(k);
+                squared_grad_accumulators[idx] *= ADAM_BETA2.powi(k);
+            }
+            first_moments[idx] = ADAM_BETA1 * first_moments[idx] + (1.0 - ADAM_BETA1) * grad;
+            squared_grad_accumulators[idx] = ADAM_BETA2 * squared_grad_accumulators[idx] + (1.0 - ADAM_BETA2) * (grad * grad);
+            last_updated_step[idx] = step_index;
 
             let t = step_index as i32;
-            let m_hat = *m_t / (1.0 - ADAM_BETA1.powi(t));
-            let v_hat = *v_t / (1.0 - ADAM_BETA2.powi(t));
+            let m_hat = first_moments[idx] / (1.0 - ADAM_BETA1.powi(t));
+            let v_hat = squared_grad_accumulators[idx] / (1.0 - ADAM_BETA2.powi(t));
             let denom = v_hat.sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
             1.0 + (gk_epsilon / denom) * m_hat
         }
@@ -668,17 +669,13 @@ fn adaptive_garg_konemann_impl(
     parallel: bool,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     let mut x_path_flows: HashMap<Vec<NodeIndex>, f64> = HashMap::new();
-    let mut f_edge_flows: HashMap<EdgeIndex, f64> = HashMap::new();
-    let mut w_edge_costs: HashMap<EdgeIndex, f64> = HashMap::new();
-    let mut squared_grad_accumulators: HashMap<EdgeIndex, f64> = HashMap::new();
-    let mut first_moments: HashMap<EdgeIndex, f64> = HashMap::new();
-
-    for edge_ref in graph.edge_references() {
-        f_edge_flows.insert(edge_ref.id(), 0.0);
-        w_edge_costs.insert(edge_ref.id(), 1.0);
-        squared_grad_accumulators.insert(edge_ref.id(), 0.0);
-        first_moments.insert(edge_ref.id(), 0.0);
-    }
+    
+    let edge_bound = graph.edge_bound();
+    let mut f_edge_flows = vec![0.0; edge_bound];
+    let mut w_edge_costs = vec![1.0; edge_bound];
+    let mut squared_grad_accumulators = vec![0.0; edge_bound];
+    let mut first_moments = vec![0.0; edge_bound];
+    let mut last_updated_step = vec![0_usize; edge_bound];
 
     let m = graph.edge_count();
     let threshold = (m as f64).ln() / (epsilon * epsilon);
@@ -686,17 +683,11 @@ fn adaptive_garg_konemann_impl(
     let mut history: Vec<IterationInfo> = Vec::new();
     let mut iteration = 0;
     let start_time = std::time::SystemTime::now();
+    let mut max_congestion = 0.0;
 
     'outer: loop {
-        for edge_ref in graph.edge_references() {
-            let capacity_u_ij = *edge_ref.weight();
-            if capacity_u_ij <= 1e-9 {
-                continue;
-            }
-            let flow_f_ij = f_edge_flows.get(&edge_ref.id()).unwrap_or(&0.0);
-            if flow_f_ij / capacity_u_ij >= threshold {
-                break 'outer;
-            }
+        if max_congestion >= threshold {
+            break 'outer;
         }
 
         let p_star_nodes =
@@ -729,10 +720,16 @@ fn adaptive_garg_konemann_impl(
             }
         }
 
-        *x_path_flows.entry(p_star_nodes.clone()).or_insert(0.0) += u_bottleneck_capacity;
+        *x_path_flows.entry(p_star_nodes).or_insert(0.0) += u_bottleneck_capacity;
 
         for &(edge_id, capacity_u_e) in &p_star_edges_details {
-            *f_edge_flows.get_mut(&edge_id).unwrap() += u_bottleneck_capacity;
+            let idx = edge_id.index();
+            f_edge_flows[idx] += u_bottleneck_capacity;
+
+            let congestion = f_edge_flows[idx] / capacity_u_e;
+            if congestion > max_congestion {
+                max_congestion = congestion;
+            }
 
             if capacity_u_e <= 1e-9 {
                 continue;
@@ -747,9 +744,10 @@ fn adaptive_garg_konemann_impl(
                 iteration + 1,
                 &mut squared_grad_accumulators,
                 &mut first_moments,
+                &mut last_updated_step,
             );
 
-            let cost_w_e = w_edge_costs.get_mut(&edge_id).unwrap();
+            let cost_w_e = &mut w_edge_costs[idx];
             *cost_w_e *= multiplier;
         }
 

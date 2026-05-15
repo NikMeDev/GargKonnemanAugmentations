@@ -118,7 +118,7 @@ fn run_single_benchmark(
         }
     };
 
-    let commodities = commodities_from_traffic_matrix(graph.node_count(), &traffic_mat);
+    let commodities = commodities_from_traffic_matrix(graph.node_count(), &traffic_mat, Some(0.1));
 
     if commodities.is_empty() && graph.node_count() > 0 {
         return BenchmarkResult {
@@ -285,7 +285,7 @@ fn main() -> Result<()> {
         "zib54",
         "brain",
     ];
-z    let algorithms_to_run = vec![
+    let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
         //Algorithm::FleischerFPTAS,
