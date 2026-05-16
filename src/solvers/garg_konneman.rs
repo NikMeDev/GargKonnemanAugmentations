@@ -206,6 +206,7 @@ pub struct IterationInfo {
     pub elapsed_time: std::time::Duration,
 }
 
+const ADAPTIVE_LEARNING_RATE: f64 = 1.0;
 const ADAPTIVE_OPTIMIZER_EPSILON: f64 = 1e-10;
 const RMSPROP_BETA: f64 = 0.99;
 const ADAM_BETA1: f64 = 0.9;
@@ -243,7 +244,7 @@ fn get_cost_multiplier(
             last_updated_step[idx] = step_index;
             
             let denom = squared_grad_accumulators[idx].sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
-            1.0 + (gk_epsilon / denom) * grad
+            1.0 + (ADAPTIVE_LEARNING_RATE / denom) * grad
         }
         OptimizerMethod::RmsProp => {
             if k > 0 {
@@ -253,7 +254,7 @@ fn get_cost_multiplier(
             last_updated_step[idx] = step_index;
 
             let denom = squared_grad_accumulators[idx].sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
-            1.0 + (gk_epsilon / denom) * grad
+            1.0 + (ADAPTIVE_LEARNING_RATE / denom) * grad
         }
         OptimizerMethod::Adam => {
             if k > 0 {
@@ -268,7 +269,7 @@ fn get_cost_multiplier(
             let m_hat = first_moments[idx] / (1.0 - ADAM_BETA1.powi(t));
             let v_hat = squared_grad_accumulators[idx] / (1.0 - ADAM_BETA2.powi(t));
             let denom = v_hat.sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
-            1.0 + (gk_epsilon / denom) * m_hat
+            1.0 + (ADAPTIVE_LEARNING_RATE / denom) * m_hat
         }
     }
 }

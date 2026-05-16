@@ -13,7 +13,8 @@ use benchmark_rust::solvers::garg_konneman::{
 };
 use benchmark_rust::utils::commodities_from_traffic_matrix;
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use polars::prelude::*;
@@ -61,6 +62,29 @@ struct BenchmarkResult {
     error: String,
 }
 
+fn find_datasets(dir: &Path, datasets: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let folder_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if folder_name.starts_with('.') {
+                    continue;
+                }
+
+                let has_gml = path.join("graph.gml").exists() && path.join("traffic_mat.json").exists();
+                let has_xml = path.join(format!("{}.xml", folder_name)).exists();
+
+                if has_gml || has_xml {
+                    datasets.push(path);
+                } else {
+                    find_datasets(&path, datasets);
+                }
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let mut true_flow_map: HashMap<String, f64> = HashMap::new();
     let true_flows_csv_path = "cvxpy_flows.csv";
@@ -103,34 +127,20 @@ fn main() -> Result<()> {
         }
     }
 
-    let datasets_to_run = vec![
-        "abilene",
-        "dfn-bwin",
-        "di-yuan",
-        // "geant",
-        // "giul39",
-        // "janos-us",
-        // "newyork",
-        // "nobel-germany",
-        // "norway",
-        // "pioro40",
-        // "sun",
-        // "ta2",
-        // "atlanta",
-        // "cost266",
-        // "dfn-gwin",
-        // "france",
-        // "germany50",
-        // "india35",
-        // "janos-us-ca",
-        // "nobel-eu",
-        // "nobel-us",
-        // "pdh",
-        // "polska",
-        // "ta1",
-        // "zib54",
-        // "brain",
-    ];
+    let gml_base_path = resolve_gml_base_path();
+    let sndlib_base_path = resolve_sndlib_base_path();
+
+    let mut datasets_to_run: Vec<PathBuf> = Vec::new();
+    find_datasets(&gml_base_path, &mut datasets_to_run);
+    datasets_to_run.sort();
+
+    if datasets_to_run.is_empty() {
+        eprintln!(
+            "Warning: Could not find any datasets in GML base path directory: {:?}",
+            gml_base_path
+        );
+    }
+
     let algorithms_to_run = vec![
         Algorithm::GargKonemann,
         Algorithm::ParGargKonemann,
@@ -145,37 +155,51 @@ fn main() -> Result<()> {
     let epsilons_to_test = vec![0.01];
 
     let mut all_results: Vec<BenchmarkResult> = Vec::new();
-    let gml_base_path = resolve_gml_base_path();
-    let sndlib_base_path = resolve_sndlib_base_path();
     let default_error_history = "[]".to_string();
 
     println!("GML base path: {:?}", gml_base_path);
     println!("SNDlib base path: {:?}", sndlib_base_path);
+    println!("Found {} datasets to run.", datasets_to_run.len());
     println!("Starting benchmarks...\n");
 
-    for dataset_name_str in &datasets_to_run {
-        let dataset_name = dataset_name_str.to_string();
-        println!("Processing Dataset: {}", dataset_name);
+    for dataset_path in &datasets_to_run {
+        let relative_path = dataset_path.strip_prefix(&gml_base_path).unwrap_or(dataset_path);
+        
+        let dataset_name = relative_path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let folder_name = dataset_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown");
+
+        println!("Processing Dataset: {} (Path: {:?})", dataset_name, dataset_path);
 
         let load_start_time = Instant::now();
 
-        let gml_dataset_path = gml_base_path.join(&dataset_name);
-        let graph_load_result = if gml_dataset_path.join("graph.gml").exists()
-            && gml_dataset_path.join("traffic_mat.json").exists()
+        let graph_load_result = if dataset_path.join("graph.gml").exists()
+            && dataset_path.join("traffic_mat.json").exists()
         {
-            load_graph_and_traffic_gml(&gml_dataset_path)
+            load_graph_and_traffic_gml(dataset_path)
         } else {
-            let mut xml_path = sndlib_base_path
-                .join(&dataset_name)
-                .join(format!("{}.xml", dataset_name));
+            let mut xml_path = dataset_path.join(format!("{}.xml", dataset_name));
             if !xml_path.exists() {
-                xml_path = sndlib_base_path.join(format!("{}.xml", dataset_name));
+                xml_path = sndlib_base_path
+                    .join(&relative_path)
+                    .join(format!("{}.xml", folder_name));
             }
 
             if !xml_path.exists() {
-                let err_msg = format!("Dataset files not found for {}", dataset_name);
+                xml_path = sndlib_base_path.join(format!("{}.xml", folder_name));
+            }
+
+            if !xml_path.exists() {
+                let err_msg = format!("Dataset files not found for {}", folder_name);
                 eprintln!("  {}", err_msg);
-                
+
                 for &algorithm_enum in &algorithms_to_run {
                     for &epsilon_val in &epsilons_to_test {
                         all_results.push(BenchmarkResult {

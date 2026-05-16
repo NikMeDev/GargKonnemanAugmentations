@@ -42,17 +42,12 @@ struct TrafficMatrixRow {
 }
 
 pub fn resolve_gml_base_path() -> PathBuf {
-    let preferred = PathBuf::from("./networks_gml/sndlib");
-    if preferred.exists() {
-        preferred
+    let path = PathBuf::from("./networks_gml");
+    if !path.exists() {
+        eprintln!("Warning: GML base path not found, falling back to current directory.");
+        PathBuf::from(".")
     } else {
-        let fallback = PathBuf::from("./networks_gml");
-        if !fallback.exists() {
-            eprintln!("Warning: GML base path not found, falling back to current directory.");
-            PathBuf::from(".")
-        } else {
-            fallback
-        }
+        path
     }
 }
 
