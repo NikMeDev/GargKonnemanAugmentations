@@ -218,6 +218,7 @@ enum OptimizerMethod {
     AdaGrad,
     RmsProp,
     Adam,
+    AdaHedge,
 }
 
 fn get_cost_multiplier(
@@ -225,6 +226,7 @@ fn get_cost_multiplier(
     edge_id: EdgeIndex,
     grad: f64,
     gk_epsilon: f64,
+    adahedge_eta: f64,
     step_index: usize,
     squared_grad_accumulators: &mut [f64],
     first_moments: &mut [f64],
@@ -270,6 +272,9 @@ fn get_cost_multiplier(
             let v_hat = squared_grad_accumulators[idx] / (1.0 - ADAM_BETA2.powi(t));
             let denom = v_hat.sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
             1.0 + (ADAPTIVE_LEARNING_RATE / denom) * m_hat
+        }
+        OptimizerMethod::AdaHedge => {
+            (adahedge_eta * grad).exp()
         }
     }
 }
@@ -343,10 +348,15 @@ fn garg_konemann_impl(
     let mut f_edge_flows = vec![0.0; edge_bound];
     let mut w_edge_costs = vec![1.0; edge_bound];
 
-    let is_adaptive = method != OptimizerMethod::Standard;
-    let mut squared_grad_accumulators = if is_adaptive { vec![0.0; edge_bound] } else { vec![] };
+    let is_adahedge = method == OptimizerMethod::AdaHedge;
+    let k_experts = edge_bound as f64;
+    let mut adahedge_delta = 0.0f64;
+    let mut adahedge_eta = epsilon;
+
+    let needs_accumulators = method == OptimizerMethod::AdaGrad || method == OptimizerMethod::RmsProp || method == OptimizerMethod::Adam;
+    let mut squared_grad_accumulators = if needs_accumulators { vec![0.0; edge_bound] } else { vec![] };
     let mut first_moments = if method == OptimizerMethod::Adam { vec![0.0; edge_bound] } else { vec![] };
-    let mut last_updated_step = if is_adaptive { vec![0_usize; edge_bound] } else { vec![] };
+    let mut last_updated_step = if needs_accumulators { vec![0_usize; edge_bound] } else { vec![] };
 
     let mut history: Vec<IterationInfo> = Vec::new();
     let mut iteration = 0;
@@ -379,6 +389,27 @@ fn garg_konemann_impl(
 
         *x_path_flows.entry(p_star_nodes).or_insert(0.0) += u_bottleneck_capacity;
 
+        let mut expected_reward = 0.0;
+        let mut mix_term = 0.0;
+        let w_sum: f64 = w_edge_costs.iter().sum();
+        let current_adahedge_eta = adahedge_eta;
+
+        if is_adahedge && w_sum > 0.0 {
+            for &(edge_id, capacity_u_e) in &p_star_edges_details {
+                let idx = edge_id.index();
+                if capacity_u_e <= 1e-9 {
+                    continue;
+                }
+                let grad = u_bottleneck_capacity / capacity_u_e;
+                let x_i = w_edge_costs[idx] / w_sum;
+                expected_reward += x_i * grad;
+                mix_term += x_i * ((current_adahedge_eta * grad).exp() - 1.0);
+            }
+            let mixability_gap = ((1.0 / current_adahedge_eta) * (1.0 + mix_term).ln() - expected_reward).max(0.0);
+            adahedge_delta += mixability_gap;
+            adahedge_eta = k_experts.ln() / (adahedge_delta + (k_experts.ln() / epsilon));
+        }
+
         let mut needs_scaling = false;
 
         for &(edge_id, capacity_u_e) in &p_star_edges_details {
@@ -400,6 +431,7 @@ fn garg_konemann_impl(
                 edge_id,
                 grad,
                 epsilon,
+                current_adahedge_eta,
                 iteration + 1,
                 &mut squared_grad_accumulators,
                 &mut first_moments,
@@ -534,6 +566,24 @@ pub fn par_adaptive_adam_garg_konemann_mcf(
     target_flow: Option<f64>,
 ) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
     garg_konemann_impl(graph, commodities, epsilon, target_flow, OptimizerMethod::Adam, true)
+}
+
+pub fn adaptive_hedge_garg_konemann_mcf(
+    graph: &GraphType,
+    commodities: &[(NodeIndex, NodeIndex)],
+    epsilon: f64,
+    target_flow: Option<f64>,
+) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
+    garg_konemann_impl(graph, commodities, epsilon, target_flow, OptimizerMethod::AdaHedge, false)
+}
+
+pub fn par_adaptive_hedge_garg_konemann_mcf(
+    graph: &GraphType,
+    commodities: &[(NodeIndex, NodeIndex)],
+    epsilon: f64,
+    target_flow: Option<f64>,
+) -> Result<(HashMap<Vec<NodeIndex>, f64>, Vec<IterationInfo>)> {
+    garg_konemann_impl(graph, commodities, epsilon, target_flow, OptimizerMethod::AdaHedge, true)
 }
 
 pub fn fleischer_fptas_mcf(

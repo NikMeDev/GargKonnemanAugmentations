@@ -10,6 +10,7 @@ use benchmark_rust::solvers::garg_konneman::{
     adaptive_rmsprop_garg_konemann_mcf, fleischer_fptas_mcf, garg_konemann_mcf,
     par_adaptive_adam_garg_konemann_mcf, par_adaptive_garg_konemann_mcf,
     par_adaptive_rmsprop_garg_konemann_mcf, par_garg_konemann_mcf,
+    adaptive_hedge_garg_konemann_mcf, par_adaptive_hedge_garg_konemann_mcf,
 };
 use benchmark_rust::utils::commodities_from_traffic_matrix;
 use std::collections::HashMap;
@@ -31,6 +32,8 @@ enum Algorithm {
     ParAdaptiveRmsPropGargKonemann,
     AdaptiveAdamGargKonemann,
     ParAdaptiveAdamGargKonemann,
+    AdaptiveHedgeGargKonemann,
+    ParAdaptiveHedgeGargKonemann,
 }
 
 impl Algorithm {
@@ -45,6 +48,8 @@ impl Algorithm {
             Algorithm::ParAdaptiveRmsPropGargKonemann => "ParAdaptiveRmsPropGargKonemann",
             Algorithm::AdaptiveAdamGargKonemann => "AdaptiveAdamGargKonemann",
             Algorithm::ParAdaptiveAdamGargKonemann => "ParAdaptiveAdamGargKonemann",
+            Algorithm::AdaptiveHedgeGargKonemann => "AdaptiveHedgeGargKonemann",
+            Algorithm::ParAdaptiveHedgeGargKonemann => "ParAdaptiveHedgeGargKonemann",
         }
     }
 }
@@ -151,6 +156,8 @@ fn main() -> Result<()> {
         Algorithm::ParAdaptiveRmsPropGargKonemann,
         Algorithm::AdaptiveAdamGargKonemann,
         Algorithm::ParAdaptiveAdamGargKonemann,
+        Algorithm::AdaptiveHedgeGargKonemann,
+        Algorithm::ParAdaptiveHedgeGargKonemann,
     ];
     let epsilons_to_test = vec![0.01];
 
@@ -313,6 +320,12 @@ fn main() -> Result<()> {
                     }
                     Algorithm::ParAdaptiveAdamGargKonemann => {
                         par_adaptive_adam_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::AdaptiveHedgeGargKonemann => {
+                        adaptive_hedge_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
+                    }
+                    Algorithm::ParAdaptiveHedgeGargKonemann => {
+                        par_adaptive_hedge_garg_konemann_mcf(&graph, &commodities, epsilon_val, true_flow_for_run)
                     }
                 };
                 let exec_time_solver_only = solver_call_time.elapsed().as_secs_f64();
