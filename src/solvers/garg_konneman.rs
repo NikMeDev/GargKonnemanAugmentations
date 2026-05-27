@@ -351,7 +351,7 @@ fn garg_konemann_impl(
     let is_adahedge = method == OptimizerMethod::AdaHedge;
     let k_experts = edge_bound as f64;
     let mut adahedge_delta = 0.0f64;
-    let mut adahedge_eta = epsilon;
+    let mut adahedge_eta = ADAPTIVE_LEARNING_RATE;
 
     let needs_accumulators = method == OptimizerMethod::AdaGrad || method == OptimizerMethod::RmsProp || method == OptimizerMethod::Adam;
     let mut squared_grad_accumulators = if needs_accumulators { vec![0.0; edge_bound] } else { vec![] };
@@ -407,7 +407,7 @@ fn garg_konemann_impl(
             }
             let mixability_gap = ((1.0 / current_adahedge_eta) * (1.0 + mix_term).ln() - expected_reward).max(0.0);
             adahedge_delta += mixability_gap;
-            adahedge_eta = k_experts.ln() / (adahedge_delta + (k_experts.ln() / epsilon));
+            adahedge_eta = k_experts.ln() / (adahedge_delta + (k_experts.ln() / ADAPTIVE_LEARNING_RATE));
         }
 
         let mut needs_scaling = false;
