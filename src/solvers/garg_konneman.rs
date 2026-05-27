@@ -235,12 +235,15 @@ fn get_cost_multiplier(
     if method == OptimizerMethod::Standard {
         return 1.0 + gk_epsilon * grad;
     }
+    if method == OptimizerMethod::AdaHedge {
+        return (adahedge_eta * grad).exp();
+    }
 
     let idx = edge_id.index();
     let k = step_index.saturating_sub(last_updated_step[idx]).saturating_sub(1) as i32;
 
     match method {
-        OptimizerMethod::Standard => unreachable!(),
+        OptimizerMethod::Standard | OptimizerMethod::AdaHedge => unreachable!(),
         OptimizerMethod::AdaGrad => {
             squared_grad_accumulators[idx] += grad * grad;
             last_updated_step[idx] = step_index;
@@ -272,9 +275,6 @@ fn get_cost_multiplier(
             let v_hat = squared_grad_accumulators[idx] / (1.0 - ADAM_BETA2.powi(t));
             let denom = v_hat.sqrt() + ADAPTIVE_OPTIMIZER_EPSILON;
             1.0 + (ADAPTIVE_LEARNING_RATE / denom) * m_hat
-        }
-        OptimizerMethod::AdaHedge => {
-            (adahedge_eta * grad).exp()
         }
     }
 }
